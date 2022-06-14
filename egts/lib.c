@@ -89,12 +89,63 @@ conn_handler(va_list ap)
 
         //TODO: buffer size depends on frame_data_len and must change for every packet
 
-        //TODO: parse packet body
 
         uint16_t frame_data_crc = 0;
         frame_data_crc += (unsigned char) buf[header_length+frame_data_len] << 8 * 0;
         frame_data_crc += (unsigned char) buf[header_length+frame_data_len+1] << 8 * 1;
         say_info("data frame crc: %zu", frame_data_crc);
+
+        // TODO: add validate body crc
+
+        //TODO: parse packet body
+        size_t current_offset = header_length;
+        size_t oid = 0;
+        while (current_offset < header_length+frame_data_len) {
+            uint16_t record_len = 0;
+            record_len += (unsigned char) buf[current_offset] << 8 * 0;
+            record_len += (unsigned char) buf[current_offset+1] << 8 * 1;
+            say_info("record length: %zu", record_len);
+
+            current_offset += 2;
+
+            uint16_t record_number = 0;
+            record_number += (unsigned char) buf[current_offset] << 8 * 0;
+            record_number += (unsigned char) buf[current_offset+1] << 8 * 1;
+            say_info("record number: %zu", record_number);
+            current_offset += 2;
+
+            uint8_t rfl = buf[current_offset];
+            current_offset += 1;
+
+            if (rfl & 1) {
+                // parse oid
+                oid += (unsigned char) buf[current_offset] << 8 * 0;
+                oid += (unsigned char) buf[current_offset+1] << 8 * 1;
+                oid += (unsigned char) buf[current_offset+2] << 8 * 2;
+                oid += (unsigned char) buf[current_offset+3] << 8 * 3;
+
+                current_offset += 4;
+
+                say_info("oid: %zu", oid);
+            }
+
+            if (rfl & 2) {
+                // doesn't parse event identifier because it never used
+                current_offset += 4;
+            }
+
+            if (rfl & 4) {
+                // doesn't parse time because it never used
+                current_offset += 4;
+            }
+
+            // only moved offset to SST and RST flag lenght. This flags don't parsed.
+            current_offset += 2;
+
+            //TODO: parse Record data
+
+            current_offset += record_len;
+        }
 
         memset(buf, 0, CONN_BUFFER_SIZE);
         break;
