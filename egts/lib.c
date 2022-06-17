@@ -6,6 +6,7 @@
 #include <module.h>
 #include "netinet/in.h"
 #include <stdarg.h>
+#include <stdlib.h>
 #include "sys/socket.h"
 #include "unistd.h"
 #include "crc.h"
@@ -37,7 +38,7 @@ static int
 conn_handler(va_list ap)
 {
     int conn = va_arg(ap, int);
-    unsigned char buf[CONN_BUFFER_SIZE];
+    unsigned char *buf = calloc(CONN_BUFFER_SIZE, sizeof(unsigned char));
 
     while (true) {
         // read bytes for detection header egts packet len
@@ -89,15 +90,19 @@ conn_handler(va_list ap)
             continue;
         }
 
-        rcv_count = recv(conn, &buf[header_length], frame_data_len + DATA_CRC_SIZE, 0);
+        size_t current_packet_size = header_length + frame_data_len + DATA_CRC_SIZE;
+        if (current_packet_size > CONN_BUFFER_SIZE)
+        {
+            say_error("large incoming packet %zu bytes. Max %d bytes", current_packet_size, CONN_BUFFER_SIZE);
+            goto exit;
+        }
+
+        rcv_count = recv(conn, &buf[header_length], current_packet_size - header_length, 0);
         if (rcv_count == -1)
         {
             say_error("received data error: %s", strerror(errno));
             goto exit;
         }
-
-        //TODO: buffer size depends on frame_data_len and must change for every packet
-
 
         uint16_t frame_data_crc = bytes_to_int16(&buf[header_length+frame_data_len]);;
         say_info("data frame crc: %zu", frame_data_crc);
