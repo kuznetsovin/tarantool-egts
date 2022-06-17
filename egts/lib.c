@@ -24,6 +24,15 @@ enum PacketType {
 
 static struct fiber *f_egts_srv = NULL;
 
+uint16_t bytes_to_int16(unsigned char *first_byte)
+{
+    uint16_t result = 0;
+    result += (unsigned char) *first_byte << 8 * 0;
+    result += (unsigned char) *(first_byte+1) << 8 * 1;
+
+    return result;
+}
+
 static int
 conn_handler(va_list ap)
 {
@@ -56,15 +65,10 @@ conn_handler(va_list ap)
             goto exit;
         }
 
-        uint16_t frame_data_len = 0;
-        frame_data_len += (unsigned char) buf[5] << 8 * 0;
-        frame_data_len += (unsigned char) buf[6] << 8 * 1;
-
+        uint16_t frame_data_len = bytes_to_int16(&buf[5]);
         say_info("frame data len: %zu", frame_data_len);
 
-        uint16_t pid = 0;
-        pid += (unsigned char) buf[7] << 8 * 0;
-        pid += (unsigned char) buf[8] << 8 * 0;
+        uint16_t pid = bytes_to_int16(&buf[7]);;
         say_info("packet identifier: %zu", pid);
 
         size_t packet_type = buf[9];
@@ -95,9 +99,7 @@ conn_handler(va_list ap)
         //TODO: buffer size depends on frame_data_len and must change for every packet
 
 
-        uint16_t frame_data_crc = 0;
-        frame_data_crc += (unsigned char) buf[header_length+frame_data_len] << 8 * 0;
-        frame_data_crc += (unsigned char) buf[header_length+frame_data_len+1] << 8 * 1;
+        uint16_t frame_data_crc = bytes_to_int16(&buf[header_length+frame_data_len]);;
         say_info("data frame crc: %zu", frame_data_crc);
 
         size_t fact_frame_data_crc = Crc16(&buf[header_length], frame_data_len);
