@@ -1,4 +1,3 @@
-/* Example of a C submodule for Tarantool */
 #include <errno.h>
 #include <fcntl.h>
 #include <lauxlib.h>
@@ -9,12 +8,13 @@
 #include <stdarg.h>
 #include "sys/socket.h"
 #include "unistd.h"
+#include "crc.h"
 
 #define CONN_LIMIT       1
 #define HEADER_MIN_LEN   11
 #define CONN_BUFFER_SIZE 2048
 #define HEADER_CRC_SIZE  1
-#define DATA_CRC_SIZE  2
+#define DATA_CRC_SIZE    2
 
 enum PacketType {
    EGTS_PT_RESPONSE,
@@ -78,7 +78,12 @@ conn_handler(va_list ap)
         unsigned char header_crc = buf[header_length-HEADER_CRC_SIZE];
         say_info("header crc: %d", header_crc);
 
-        // TODO: add validate header crc
+        unsigned char fact_header_crc = Crc8(buf, header_length-1);
+        if (fact_header_crc != header_crc)
+        {
+            say_error("invalid crc header: expected %X actual %X", header_crc, fact_header_crc);
+            continue;
+        }
 
         rcv_count = recv(conn, &buf[header_length], frame_data_len + DATA_CRC_SIZE, 0);
         if (rcv_count == -1)
@@ -95,9 +100,13 @@ conn_handler(va_list ap)
         frame_data_crc += (unsigned char) buf[header_length+frame_data_len+1] << 8 * 1;
         say_info("data frame crc: %zu", frame_data_crc);
 
-        // TODO: add validate body crc
+        size_t fact_frame_data_crc = Crc16(&buf[header_length], frame_data_len);
+        if (fact_frame_data_crc != frame_data_crc)
+        {
+            say_error("invalid crc data: expected %zu actual %zu", frame_data_crc, fact_frame_data_crc);
+            continue;
+        }
 
-        //TODO: parse packet body
         size_t current_offset = header_length;
         size_t oid = 0;
         while (current_offset < header_length+frame_data_len) {
