@@ -34,6 +34,17 @@ uint16_t bytes_to_int16(unsigned char *first_byte)
     return result;
 }
 
+uint32_t bytes_to_int32(unsigned char *first_byte)
+{
+    uint32_t result = 0;
+    result += (unsigned char) *first_byte << 8 * 0;
+    result += (unsigned char) *(first_byte+1) << 8 * 1;
+    result += (unsigned char) *(first_byte+2) << 8 * 2;
+    result += (unsigned char) *(first_byte+3) << 8 * 3;
+
+    return result;
+}
+
 static int
 conn_handler(va_list ap)
 {
@@ -104,7 +115,7 @@ conn_handler(va_list ap)
             goto exit;
         }
 
-        uint16_t frame_data_crc = bytes_to_int16(&buf[header_length+frame_data_len]);;
+        uint16_t frame_data_crc = bytes_to_int16(&buf[header_length+frame_data_len]);
         say_info("data frame crc: %zu", frame_data_crc);
 
         size_t fact_frame_data_crc = Crc16(&buf[header_length], frame_data_len);
@@ -117,16 +128,12 @@ conn_handler(va_list ap)
         size_t current_offset = header_length;
         size_t oid = 0;
         while (current_offset < header_length+frame_data_len) {
-            uint16_t record_len = 0;
-            record_len += (unsigned char) buf[current_offset] << 8 * 0;
-            record_len += (unsigned char) buf[current_offset+1] << 8 * 1;
+            uint16_t record_len = bytes_to_int16(&buf[current_offset]);
             say_info("record length: %zu", record_len);
 
             current_offset += 2;
 
-            uint16_t record_number = 0;
-            record_number += (unsigned char) buf[current_offset] << 8 * 0;
-            record_number += (unsigned char) buf[current_offset+1] << 8 * 1;
+            uint16_t record_number = bytes_to_int16(&buf[current_offset]);;
             say_info("record number: %zu", record_number);
             current_offset += 2;
 
@@ -135,10 +142,7 @@ conn_handler(va_list ap)
 
             if (rfl & 1) {
                 // parse oid
-                oid += (unsigned char) buf[current_offset] << 8 * 0;
-                oid += (unsigned char) buf[current_offset+1] << 8 * 1;
-                oid += (unsigned char) buf[current_offset+2] << 8 * 2;
-                oid += (unsigned char) buf[current_offset+3] << 8 * 3;
+                oid = bytes_to_int32(&buf[current_offset]);
 
                 current_offset += 4;
 
@@ -166,7 +170,7 @@ conn_handler(va_list ap)
         memset(buf, 0, CONN_BUFFER_SIZE);
         break;
     }
-
+   // TODO: send response packet
 exit:
     fiber_cancel(fiber_self());
     close(conn);
