@@ -23,6 +23,11 @@ enum PacketType {
    EGTS_PT_SIGNED_APPDATA
 };
 
+enum SubRecordType {
+   EGTS_SR_RECORD_RESPONSE = 0,
+   EGTS_SR_POS_DATA = 16
+};
+
 static struct fiber *f_egts_srv = NULL;
 
 uint16_t bytes_to_int16(unsigned char *first_byte)
@@ -162,9 +167,61 @@ conn_handler(va_list ap)
             // only moved offset to SST and RST flag lenght. This flags don't parsed.
             current_offset += 2;
 
-            //TODO: parse Record data
+            size_t srd_offest = current_offset;
+            while (srd_offest < record_len) {
+                uint8_t subrecord_type = buf[srd_offest];
+                srd_offest += 1;
+                uint8_t subrecord_len = bytes_to_int16(&buf[srd_offest]);
+                srd_offest += 2;
 
-            current_offset += record_len;
+                switch (subrecord_type) {
+                    case EGTS_SR_RECORD_RESPONSE:
+                        say_info("parsing EGTS_SR_RECORD_RESPONSE section");
+                        break;
+                    case EGTS_SR_POS_DATA:
+                        say_info("parsing EGTS_SR_POS_DATA section");
+
+                        //NavigationTime
+						uint32_t navigate_time = bytes_to_int32(&buf[srd_offest]);
+                        // navigate time in egts has offest from 01.01.2010 00:00:00 UTC
+						navigate_time += 1262304000;
+
+
+                        //Latitude
+						double latitude = (double)bytes_to_int32(&buf[srd_offest+4]) * 90 / 0xFFFFFFFF;
+
+                        //Longitude
+						double longitude = (double)bytes_to_int32(&buf[srd_offest+8]) * 180 / 0xFFFFFFFF;
+
+                        //Speed
+						uint16_t speed = bytes_to_int16(&buf[srd_offest+13]);
+                        // first bit contains dir higest dir bit
+                        uint8_t dir_higest_bit = speed >> 15;
+
+                        // first bit contains dir higest dir bit second - ALTE flag, thas why they were ingrored
+                        speed <<= 2;
+                        speed >>= 2;
+
+                        // speed has stored in protocol with discreteness 0,1 km/h
+                        speed /= 10;
+
+						//Direction
+						uint8_t direction = (uint16_t)buf[srd_offest+15];
+                        direction |= dir_higest_bit << 7;
+
+                        say_info("time: %zu, lon: %f, lat: %f, speed: %u, direction %d", navigate_time, longitude, latitude, speed, direction);
+
+                        // TODO: save to tarantool space
+                        break;
+                    default :
+                        say_error("unknown section type: %d", subrecord_type);
+                        break;
+                }
+
+                srd_offest += subrecord_len;
+            }
+
+            current_offset = srd_offest;
         }
 
         memset(buf, 0, CONN_BUFFER_SIZE);
