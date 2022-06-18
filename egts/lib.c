@@ -35,6 +35,8 @@ enum RecordStatus {
 };
 
 static struct fiber *f_egts_srv = NULL;
+static struct fiber *fibers_pool[CONN_LIMIT];
+static size_t active_egts_fiber_counter;
 
 uint16_t bytes_to_uint16_le(unsigned char *first_byte)
 {
@@ -66,29 +68,41 @@ conn_handler(va_list ap)
     size_t oid = 0;
 
     size_t result_code;
+    int rcv_bytes;
     while (true) {
         result_code = EGTS_PC_OK;
+        rcv_bytes = -1;
         // read bytes for detection header egts packet len
-        int rcv_count = recv(conn, buf, HEADER_MIN_LEN, 0);
-        if (rcv_count == -1)
+        while ((rcv_bytes = recv(conn, buf, HEADER_MIN_LEN, 0)) < 0)
         {
+            if (errno == EWOULDBLOCK || errno == EAGAIN)
+            {
+                fiber_sleep(0.1);
+                continue;
+            }
+
             say_error("received header data error: %s", strerror(errno));
             goto exit;
         }
 
-        if (rcv_count == 0)
+        if (rcv_bytes == 0)
         {
             say_info("connection close");
             goto exit;
         }
 
+
         size_t header_length = (uint8_t)buf[3];
         say_info("header len: %d", header_length);
 
-
-        rcv_count = recv(conn, &buf[HEADER_MIN_LEN], header_length - HEADER_MIN_LEN, 0);
-        if (rcv_count == -1)
+        while ((rcv_bytes = recv(conn, &buf[HEADER_MIN_LEN], header_length - HEADER_MIN_LEN, 0)) < 0)
         {
+            if (errno == EWOULDBLOCK || errno == EAGAIN)
+            {
+                fiber_sleep(0.1);
+                continue;
+            }
+
             say_error("received header remainder error: %s", strerror(errno));
             goto exit;
         }
@@ -125,10 +139,21 @@ conn_handler(va_list ap)
             goto exit;
         }
 
-        rcv_count = recv(conn, &buf[header_length], current_packet_size - header_length, 0);
-        if (rcv_count == -1)
+        while ((rcv_bytes = recv(conn, &buf[header_length], current_packet_size - header_length, 0)) < 0)
         {
+            if (errno == EWOULDBLOCK || errno == EAGAIN)
+            {
+                fiber_sleep(0.1);
+                continue;
+            }
+
             say_error("received data error: %s", strerror(errno));
+            goto exit;
+        }
+
+        if (rcv_bytes == 0)
+        {
+            say_info("connection close");
             goto exit;
         }
 
@@ -310,11 +335,13 @@ response:
         memset(buf, 0, CONN_BUFFER_SIZE);
         memset(response, 0, resp_size);
         free(sdr_responses);
+        fiber_yield();
     }
 exit:
     free(buf);
     free(response);
     fiber_cancel(fiber_self());
+    active_egts_fiber_counter -= 1;
     close(conn);
 
     return 0;
@@ -328,7 +355,6 @@ fiber_conn_listner(va_list ap)
     size_t sock_srv = va_arg(ap, size_t);
     struct sockaddr_in client;
 
-    socklen_t namelen;
     while (true)
     {
         socklen_t namelen = sizeof(client);
@@ -342,8 +368,10 @@ fiber_conn_listner(va_list ap)
                 continue;
             }
         } else {
-            struct fiber *h_conn_handle = fiber_new("egts_client_handle", conn_handler);
-            fiber_start(h_conn_handle, ns);
+            /* struct fiber *h_conn_handle = fiber_new("egts_client_handle", conn_handler); */
+            fibers_pool[active_egts_fiber_counter] = fiber_new("egts_client_handle", conn_handler);
+            fiber_start(fibers_pool[active_egts_fiber_counter], ns);
+            active_egts_fiber_counter += 1;
         };
 
         fiber_yield();
@@ -379,11 +407,13 @@ start_server(lua_State *L)
 
     if (bind(sock_srv, (struct sockaddr *)&server_info, sizeof(server_info)) < 0)
     {
+        say_error("bind socket error: %s", strerror(errno));
         return luaL_error(L, "bind socket error");
     }
 
 	if (listen(sock_srv, CONN_LIMIT) != 0)
     {
+        say_error("listen socket error: %s", strerror(errno));
         return luaL_error(L, "listen socket error");
     }
 
@@ -398,6 +428,10 @@ start_server(lua_State *L)
 static int
 stop_server(lua_State *L)
 {
+    for (size_t i; i < active_egts_fiber_counter; i++) {
+        fiber_cancel(fibers_pool[i]);
+    }
+
     if (f_egts_srv != NULL) {
         say_info("stop fiber server");
 		fiber_cancel(f_egts_srv);
