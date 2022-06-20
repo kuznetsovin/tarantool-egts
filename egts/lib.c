@@ -4,6 +4,7 @@
 #include <lua.h>
 #include <lualib.h>
 #include <module.h>
+#include <msgpuck.h>
 #include "netinet/in.h"
 #include <stdarg.h>
 #include <stdlib.h>
@@ -16,6 +17,9 @@
 #define CONN_BUFFER_SIZE 2048
 #define HEADER_CRC_SIZE  1
 #define DATA_CRC_SIZE    2
+#define SPACE_NAME       "_egts_store"
+#define TUPLE_SIZE       1024
+#define FIELDS_COUNT     6
 
 enum PacketType {
    EGTS_PT_RESPONSE,
@@ -69,7 +73,14 @@ conn_handler(va_list ap)
 
     size_t result_code;
     int rcv_bytes;
+    char *tuple = calloc(TUPLE_SIZE, sizeof(char));
+
+    uint32_t space_id = box_space_id_by_name(SPACE_NAME, strlen(SPACE_NAME));
     while (true) {
+        if (fiber_is_cancelled()) {
+            break;
+        }
+
         result_code = EGTS_PC_OK;
         rcv_bytes = -1;
         // read bytes for detection header egts packet len
@@ -93,7 +104,7 @@ conn_handler(va_list ap)
 
 
         size_t header_length = (uint8_t)buf[3];
-        say_info("header len: %d", header_length);
+        say_debug("header len: %d", header_length);
 
         while ((rcv_bytes = recv(conn, &buf[HEADER_MIN_LEN], header_length - HEADER_MIN_LEN, 0)) < 0)
         {
@@ -108,13 +119,13 @@ conn_handler(va_list ap)
         }
 
         uint16_t frame_data_len = bytes_to_uint16_le(&buf[5]);
-        say_info("frame data len: %zu", frame_data_len);
+        say_debug("frame data len: %zu", frame_data_len);
 
         uint16_t pid = bytes_to_uint16_le(&buf[7]);;
-        say_info("packet identifier: %zu", pid);
+        say_debug("packet identifier: %zu", pid);
 
         size_t packet_type = buf[9];
-        say_info("packet type: %d", packet_type);
+        say_debug("packet type: %d", packet_type);
         if (packet_type == EGTS_PT_SIGNED_APPDATA)
         {
             say_error("packet type EGTS_PT_SIGNED_APPDATA has not supported yet");
@@ -122,7 +133,7 @@ conn_handler(va_list ap)
         }
 
         unsigned char header_crc = buf[header_length-HEADER_CRC_SIZE];
-        say_info("header crc: %d", header_crc);
+        say_debug("header crc: %d", header_crc);
 
         unsigned char fact_header_crc = Crc8(buf, header_length-1);
         if (fact_header_crc != header_crc)
@@ -158,7 +169,7 @@ conn_handler(va_list ap)
         }
 
         uint16_t frame_data_crc = bytes_to_uint16_le(&buf[header_length+frame_data_len]);
-        say_info("data frame crc: %zu", frame_data_crc);
+        say_debug("data frame crc: %zu", frame_data_crc);
 
         size_t fact_frame_data_crc = Crc16(&buf[header_length], frame_data_len);
         if (fact_frame_data_crc != frame_data_crc)
@@ -175,12 +186,12 @@ conn_handler(va_list ap)
 
         while (current_offset < header_length+frame_data_len) {
             uint16_t record_len = bytes_to_uint16_le(&buf[current_offset]);
-            say_info("record length: %zu", record_len);
+            say_debug("record length: %zu", record_len);
 
             current_offset += 2;
 
             uint16_t record_number = bytes_to_uint16_le(&buf[current_offset]);;
-            say_info("record number: %zu", record_number);
+            say_debug("record number: %zu", record_number);
             current_offset += 2;
 
             uint8_t rfl = buf[current_offset];
@@ -192,7 +203,7 @@ conn_handler(va_list ap)
 
                 current_offset += 4;
 
-                say_info("oid: %zu", oid);
+                say_debug("oid: %zu", oid);
             }
 
             if (rfl & 2) {
@@ -209,6 +220,11 @@ conn_handler(va_list ap)
             current_offset += 2;
 
             size_t srd_offest = current_offset;
+
+            char *tuple_end = tuple;
+            tuple_end = mp_encode_array(tuple_end,  FIELDS_COUNT);
+            tuple_end = mp_encode_uint(tuple_end, oid);
+
             while (srd_offest < record_len) {
                 uint8_t subrecord_type = buf[srd_offest];
                 srd_offest += 1;
@@ -217,25 +233,27 @@ conn_handler(va_list ap)
 
                 switch (subrecord_type) {
                     case EGTS_SR_RECORD_RESPONSE:
-                        say_info("parsing EGTS_SR_RECORD_RESPONSE section");
+                        say_debug("parsing EGTS_SR_RECORD_RESPONSE section");
                         break;
                     case EGTS_SR_POS_DATA:
-                        say_info("parsing EGTS_SR_POS_DATA section");
+                        say_debug("parsing EGTS_SR_POS_DATA section");
 
                         //NavigationTime
-						uint32_t navigate_time = bytes_to_uint32_le(&buf[srd_offest]);
+                        uint32_t navigate_time = bytes_to_uint32_le(&buf[srd_offest]);
                         // navigate time in egts has offest from 01.01.2010 00:00:00 UTC
-						navigate_time += 1262304000;
-
+                        navigate_time += 1262304000;
+                        tuple_end = mp_encode_uint(tuple_end, navigate_time);
 
                         //Latitude
-						double latitude = (double)bytes_to_uint32_le(&buf[srd_offest+4]) * 90 / 0xFFFFFFFF;
+                        double latitude = (double)bytes_to_uint32_le(&buf[srd_offest+4]) * 90 / 0xFFFFFFFF;
+                        tuple_end = mp_encode_double(tuple_end, latitude);
 
                         //Longitude
-						double longitude = (double)bytes_to_uint32_le(&buf[srd_offest+8]) * 180 / 0xFFFFFFFF;
+                        double longitude = (double)bytes_to_uint32_le(&buf[srd_offest+8]) * 180 / 0xFFFFFFFF;
+                        tuple_end = mp_encode_double(tuple_end, longitude);
 
                         //Speed
-						uint16_t speed = bytes_to_uint16_le(&buf[srd_offest+13]);
+                        uint16_t speed = bytes_to_uint16_le(&buf[srd_offest+13]);
                         // first bit contains dir higest dir bit
                         uint8_t dir_higest_bit = speed >> 15;
 
@@ -245,14 +263,15 @@ conn_handler(va_list ap)
 
                         // speed has stored in protocol with discreteness 0,1 km/h
                         speed /= 10;
+                        tuple_end = mp_encode_uint(tuple_end, speed);
 
-						//Direction
-						uint8_t direction = (uint16_t)buf[srd_offest+15];
+                        //Direction
+                        uint8_t direction = (uint16_t)buf[srd_offest+15];
                         direction |= dir_higest_bit << 7;
+                        tuple_end = mp_encode_uint(tuple_end, direction);
 
-                        say_info("time: %zu, lon: %f, lat: %f, speed: %u, direction %d", navigate_time, longitude, latitude, speed, direction);
+                        say_debug("time: %zu, lon: %f, lat: %f, speed: %u, direction %d", navigate_time, longitude, latitude, speed, direction);
 
-                        // TODO: save to tarantool space
                         break;
                     default :
                         say_error("unknown section type: %d", subrecord_type);
@@ -263,6 +282,16 @@ conn_handler(va_list ap)
             }
 
             current_offset = srd_offest;
+
+            int n = box_insert(space_id, tuple, tuple_end, NULL);
+            if (n < 0) {
+                say_error(box_error_message(box_error_last()));
+                memset(tuple, 0, TUPLE_SIZE);
+                continue;
+            }
+
+            say_debug("point was saved");
+            memset(tuple, 0, TUPLE_SIZE);
 
             // create response record data section (see egts specification)
             // every subrecord contains 5 bytes
@@ -340,12 +369,15 @@ response:
 exit:
     free(buf);
     free(response);
+    free(tuple);
     fiber_cancel(fiber_self());
     active_egts_fiber_counter -= 1;
     close(conn);
 
     return 0;
 }
+
+static size_t sock;
 
 static int
 fiber_conn_listner(va_list ap)
@@ -357,6 +389,10 @@ fiber_conn_listner(va_list ap)
 
     while (true)
     {
+        if (fiber_is_cancelled()) {
+            break;
+        }
+
         socklen_t namelen = sizeof(client);
         int ns = accept(sock_srv, (struct sockaddr *)&client, &namelen);
         if (ns == -1)
@@ -368,7 +404,6 @@ fiber_conn_listner(va_list ap)
                 continue;
             }
         } else {
-            /* struct fiber *h_conn_handle = fiber_new("egts_client_handle", conn_handler); */
             fibers_pool[active_egts_fiber_counter] = fiber_new("egts_client_handle", conn_handler);
             fiber_start(fibers_pool[active_egts_fiber_counter], ns);
             active_egts_fiber_counter += 1;
@@ -379,18 +414,18 @@ fiber_conn_listner(va_list ap)
 	return 0;
 }
 
+
+static size_t sock_srv;
+
 static int
 start_server(lua_State *L)
 {
 
-    if (lua_gettop(L) < 2)
-		return luaL_error(L, "usage: start_server(host: string, port: number)");
+    if (lua_gettop(L) < 1)
+		return luaL_error(L, "usage: start_server(port: number)");
 
+	int port = lua_tointeger(L, 1);
 
-	const char* host = lua_tostring(L, 1);
-	int port = lua_tointeger(L, 2);
-
-    static size_t sock_srv;
 	if ((sock_srv = socket(AF_INET, SOCK_STREAM, 0)) < 0)
     {
         return luaL_error(L, "open socket error");
@@ -420,7 +455,7 @@ start_server(lua_State *L)
     f_egts_srv = fiber_new("egts_server", fiber_conn_listner);
 	fiber_start(f_egts_srv, sock_srv);
 
-	say_info("start egts server %s:%d", host, port);
+	say_info("start egts server on port %d", port);
 
 	return 0;
 }
@@ -434,31 +469,45 @@ stop_server(lua_State *L)
 
     if (f_egts_srv != NULL) {
         say_info("stop fiber server");
-		fiber_cancel(f_egts_srv);
-		f_egts_srv = NULL;
-	}
+        fiber_cancel(f_egts_srv);
+        f_egts_srv = NULL;
+        close(sock_srv);
+    }
 
-	say_info("stop egts server");
 
-	/* close(sock_srv); */
-	return 0;
+    say_info("stop egts server");
+    return 0;
 }
 
 /* exported function */
 LUA_API int
 luaopen_egts_lib(lua_State *L)
 {
-	/* result returned from require('egts.lib') */
-	lua_newtable(L);
+    // add handaling shuutdown (os.exit) trigger
+    lua_getglobal(L, "box");
+    if (!lua_istable(L, -1)) {
+        return luaL_error(L, "assertion failed! missing global 'box'");
+    }
 
-	static const struct luaL_Reg lib [] = {
-		{"start_server", start_server},
-		{"stop_server", stop_server},
-		{NULL, NULL}
-	};
+    lua_pushstring(L, "ctl");
+    lua_rawget(L, -2);
+    if (!lua_istable(L, -1)) {
+        return luaL_error(L, "assertion failed! missing module 'box.ctl'");
+    }
 
-	/* luaL_register(L, NULL, meta); */
-	luaL_newlib(L, lib);
+    lua_getfield(L, -1, "on_shutdown");
+    if (lua_isfunction(L, -1)) {
+        lua_pushcfunction(L, stop_server);
+        lua_call(L, 1, 0);
+    }
 
-	return 1;
+    static const struct luaL_Reg lib [] = {
+        {"start_server", start_server},
+        {"stop_server", stop_server},
+        {NULL, NULL}
+    };
+
+    luaL_newlib(L, lib);
+
+    return 1;
 }

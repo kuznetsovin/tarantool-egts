@@ -1,4 +1,6 @@
 #!/usr/bin/env tarantool
+box.cfg{listen=3301, log_level=7}
+box.schema.user.passwd('admin', '123')
 
 local egts = require('egts')
 local fiber = require('fiber')
@@ -9,18 +11,29 @@ local message = string.char(0x01, 0x00, 0x03, 0x0B, 0x00, 0x23, 0x00, 0x8A, 0x00
 		0x00, 0x99, 0xB0, 0x09, 0x02, 0x00, 0x02, 0x02, 0x10, 0x15, 0x00, 0xD5, 0x3F, 0x01, 0x10, 0x6F, 0x1C, 0x05, 0x9E,
 		0x7A, 0xB5, 0x3C, 0x35, 0x01, 0xD0, 0x87, 0x2C, 0x01, 0x00, 0x00, 0x00, 0x00, 0xCC, 0x27)
 
-egts.start_server('localhost', 5555)
+egts.init_store()
+
+egts.start_server(5555)
 
 fiber.create(function ()
-        local sock, e = socket.tcp_connect('localhost', 5555)
-        if sock ~= nil then
-            sock:write(message)
-            sock:close()
-        else
-            print("client err: " .. e)
-        end
+    local sock, e = socket.tcp_connect('localhost', 5555)
+    if sock == nil then
+      print("client err: " .. e)
+      os.exit(1)
+    end
+
+    sock:write(message)
+    sock:close()
 end)
 
-fiber.sleep(0.1)
+fiber.sleep(1)
 
 egts.stop_server()
+egts.start_server(5555)
+
+if box.space[egts.SYSTEM_SPACE]:len{} ~= 1 then
+  print("record not found")
+  os.exit(1)
+end
+
+os.exit(0)
